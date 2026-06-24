@@ -21,10 +21,19 @@ class VirtualSMSException(Exception):
         error_code: str,
         http_status: int,
         retry_after: Optional[int] = None,
+        rate_limit_limit: Optional[int] = None,
+        rate_limit_remaining: Optional[int] = None,
     ) -> "VirtualSMSException":
         message = VirtualSMSException._message_for_code(error_code)
 
         if error_code in ("BAD_KEY", "BANNED", "PURCHASE_RESTRICTED", "SERVICE_RESTRICTED"):
+            if http_status == 429:
+                return RateLimitException(
+                    message, error_code, http_status,
+                    retry_after=retry_after or 0,
+                    rate_limit_limit=rate_limit_limit,
+                    rate_limit_remaining=rate_limit_remaining,
+                )
             return AuthenticationException(message, error_code, http_status)
 
         if error_code == "NO_BALANCE":
@@ -56,7 +65,12 @@ class VirtualSMSException(Exception):
             return ActivationException(message, error_code, http_status)
 
         if error_code == "CONCURRENT_LIMIT":
-            return RateLimitException(message, error_code, http_status, retry_after or 0)
+            return RateLimitException(
+                message, error_code, http_status,
+                retry_after=retry_after or 0,
+                rate_limit_limit=rate_limit_limit,
+                rate_limit_remaining=rate_limit_remaining,
+            )
 
         return ServerException(message, error_code, http_status)
 
@@ -118,8 +132,12 @@ class RateLimitException(VirtualSMSException):
         error_code: str,
         http_status: int,
         retry_after: int = 0,
+        rate_limit_limit: Optional[int] = None,
+        rate_limit_remaining: Optional[int] = None,
     ):
         super().__init__(message, error_code, http_status, retry_after=retry_after)
+        self.rate_limit_limit = rate_limit_limit
+        self.rate_limit_remaining = rate_limit_remaining
 
 
 class ServerException(VirtualSMSException):

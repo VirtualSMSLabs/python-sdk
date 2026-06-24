@@ -7,9 +7,10 @@ from virtualsms.exceptions import (
     AuthenticationException,
     InsufficientBalanceException,
     NoNumbersException,
+    RateLimitException,
     VirtualSMSException,
 )
-from virtualsms.response import BalanceResponse, NumberResponse
+from virtualsms.response import BalanceResponse, NumberResponse, RateLimitInfo
 
 
 class MockTransport(Transport):
@@ -268,4 +269,83 @@ class TestTrackingHeaders:
     def test_version_is_set(self, client, transport):
         transport.set_response(Response(200, "ACCESS_BALANCE:10.50"))
         client.get_balance()
-        assert transport.last_headers["X-SDK-Version"] == "1.0.0"
+        assert transport.last_headers["X-SDK-Version"] == "1.1.0"
+
+
+class TestRateLimitInfo:
+    def test_get_rate_limit_info_returns_none_before_any_request(self, client):
+        assert client.get_rate_limit_info() is None
+
+    def test_get_rate_limit_info_returns_info_after_successful_request(self, client, transport):
+        transport.set_response(Response(
+            200,
+            "ACCESS_BALANCE:10.50",
+            {"X-RateLimit-Limit": "100", "X-RateLimit-Remaining": "95"},
+        ))
+        client.get_balance()
+        info = client.get_rate_limit_info()
+        assert info is not None
+        assert info.limit == 100
+        assert info.remaining == 95
+
+    def test_get_rate_limit_info_returns_none_when_headers_absent(self, client, transport):
+        transport.set_response(Response(200, "ACCESS_BALANCE:10.50"))
+        client.get_balance()
+        assert client.get_rate_limit_info() is None
+
+    def test_rate_limit_info_updated_on_each_request(self, client, transport):
+        transport.set_response(Response(
+            200,
+            "ACCESS_BALANCE:10.50",
+            {"X-RateLimit-Limit": "100", "X-RateLimit-Remaining": "95"},
+        ))
+        client.get_balance()
+        transport.set_response(Response(
+            200,
+            "ACCESS_BALANCE:10.50",
+            {"X-RateLimit-Limit": "100", "X-RateLimit-Remaining": "90"},
+        ))
+        client.get_balance()
+        info = client.get_rate_limit_info()
+        assert info is not None
+        assert info.remaining == 90
+
+
+class TestRateLimitExceptionHandling:
+    def test_http_429_throws_rate_limit_exception(self, client, transport):
+        transport.set_response(Response(
+            429,
+            "BANNED",
+            {"Retry-After": "60", "X-RateLimit-Limit": "100", "X-RateLimit-Remaining": "0"},
+        ))
+        with pytest.raises(RateLimitException) as exc_info:
+            client.get_balance()
+        assert exc_info.value.http_status == 429
+        assert exc_info.value.retry_after == 60
+        assert exc_info.value.rate_limit_limit == 100
+        assert exc_info.value.rate_limit_remaining == 0
+
+    def test_http_403_throws_authentication_exception(self, client, transport):
+        transport.set_response(Response(403, "BANNED"))
+        with pytest.raises(AuthenticationException):
+            client.get_balance()
+
+    def test_rate_limit_exception_has_nullable_fields_when_headers_absent(self, client, transport):
+        transport.set_response(Response(429, "CONCURRENT_LIMIT", {"Retry-After": "30"}))
+        with pytest.raises(RateLimitException) as exc_info:
+            client.get_number("wa", 73)
+        assert exc_info.value.rate_limit_limit is None
+        assert exc_info.value.rate_limit_remaining is None
+        assert exc_info.value.retry_after == 30
+
+    def test_concurrent_limit_on_429_throws_rate_limit_exception(self, client, transport):
+        transport.set_response(Response(
+            429,
+            "CONCURRENT_LIMIT",
+            {"Retry-After": "10", "X-RateLimit-Limit": "5", "X-RateLimit-Remaining": "0"},
+        ))
+        with pytest.raises(RateLimitException) as exc_info:
+            client.get_number("wa", 73)
+        assert exc_info.value.error_code == "CONCURRENT_LIMIT"
+        assert exc_info.value.rate_limit_limit == 5
+        assert exc_info.value.rate_limit_remaining == 0

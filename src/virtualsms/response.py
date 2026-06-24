@@ -20,3 +20,9 @@ class StatusResponse:
     status: str
     code: Optional[str] = None
     sms_text: Optional[str] = None
+
+
+@dataclass
+class RateLimitInfo:
+    limit: int
+    remaining: int

@@ -10,7 +10,7 @@ from virtualsms.exceptions import (
     ValidationException,
     VirtualSMSException,
 )
-from virtualsms.response import BalanceResponse, NumberResponse, StatusResponse
+from virtualsms.response import BalanceResponse, NumberResponse, RateLimitInfo, StatusResponse
 from virtualsms.transport import Response, Transport, UrllibTransport
 
 __all__ = [
@@ -27,6 +27,7 @@ __all__ = [
     "ServerException",
     "BalanceResponse",
     "NumberResponse",
+    "RateLimitInfo",
     "StatusResponse",
     "Transport",
     "UrllibTransport",

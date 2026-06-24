@@ -220,6 +220,7 @@ from virtualsms import (
     ValidationException,
     ActivationException,
     RateLimitException,
+    RateLimitInfo,
     ServerException,
 )
 
@@ -241,7 +242,7 @@ except ActivationException:
     # NO_ACTIVATION, WRONG_ACTIVATION_ID, EARLY_CANCEL_DENIED, RENEW_ACTIVATION_NOT_AVAILABLE
     pass
 except RateLimitException as e:
-    # CONCURRENT_LIMIT — check e.retry_after
+    # CONCURRENT_LIMIT or BANNED on 429 — check e.retry_after, e.rate_limit_limit, e.rate_limit_remaining
     pass
 except ServerException:
     # ERROR_SQL, unknown errors
@@ -250,26 +251,63 @@ except ServerException:
 
 ### Error Code Reference
 
-| Error Code | Exception | Description |
-|-----------|-----------|-------------|
-| `BAD_KEY` | `AuthenticationException` | Invalid API key |
-| `BANNED` | `AuthenticationException` | Account banned or IP blocked |
-| `PURCHASE_RESTRICTED` | `AuthenticationException` | User restricted from purchasing |
-| `SERVICE_RESTRICTED` | `AuthenticationException` | Service restricted for account |
-| `NO_BALANCE` | `InsufficientBalanceException` | Insufficient balance |
-| `NO_NUMBERS` | `NoNumbersException` | No numbers available |
-| `WRONG_SERVICE` | `ValidationException` | Invalid service code |
-| `WRONG_COUNTRY` | `ValidationException` | Invalid country ID |
-| `BAD_ACTION` | `ValidationException` | Invalid action |
-| `BAD_STATUS` | `ValidationException` | Invalid status code |
-| `NO_PRICES` | `ValidationException` | No pricing data available |
-| `INVALID_PROVIDER` | `ValidationException` | Invalid pool provider |
-| `NO_ACTIVATION` | `ActivationException` | Activation not found |
-| `WRONG_ACTIVATION_ID` | `ActivationException` | Invalid activation ID |
-| `EARLY_CANCEL_DENIED` | `ActivationException` | Cannot cancel within 5 minutes |
-| `RENEW_ACTIVATION_NOT_AVAILABLE` | `ActivationException` | Number not available for reactivation |
-| `CONCURRENT_LIMIT` | `RateLimitException` | Too many concurrent activations |
-| `ERROR_SQL` | `ServerException` | Internal server error |
+| Error Code | Exception | HTTP Status | Description |
+|-----------|-----------|-------------|-------------|
+| `BAD_KEY` | `AuthenticationException` | 401 | Invalid API key |
+| `BANNED` | `RateLimitException` | 429 | Rate limited (temporary) |
+| `BANNED` | `AuthenticationException` | 403 | Account banned or IP blocked (permanent) |
+| `PURCHASE_RESTRICTED` | `AuthenticationException` | 403 | User restricted from purchasing |
+| `SERVICE_RESTRICTED` | `AuthenticationException` | 403 | Service restricted for account |
+| `NO_BALANCE` | `InsufficientBalanceException` | 402 | Insufficient balance |
+| `NO_NUMBERS` | `NoNumbersException` | 404 | No numbers available |
+| `WRONG_SERVICE` | `ValidationException` | 400 | Invalid service code |
+| `WRONG_COUNTRY` | `ValidationException` | 400 | Invalid country ID |
+| `BAD_ACTION` | `ValidationException` | 400 | Invalid action |
+| `BAD_STATUS` | `ValidationException` | 400 | Invalid status code |
+| `NO_PRICES` | `ValidationException` | 400 | No pricing data available |
+| `INVALID_PROVIDER` | `ValidationException` | 400 | Invalid pool provider |
+| `NO_ACTIVATION` | `ActivationException` | 404 | Activation not found |
+| `WRONG_ACTIVATION_ID` | `ActivationException` | 400 | Invalid activation ID |
+| `EARLY_CANCEL_DENIED` | `ActivationException` | 400 | Cannot cancel within 5 minutes |
+| `RENEW_ACTIVATION_NOT_AVAILABLE` | `ActivationException` | 400 | Number not available for reactivation |
+| `CONCURRENT_LIMIT` | `RateLimitException` | 429 | Too many concurrent activations |
+| `ERROR_SQL` | `ServerException` | 500 | Internal server error |
+
+Each exception instance has:
+- `error_code` — the API error code string
+- `http_status` — the HTTP status code from the response
+- `retry_after` — (only on `RateLimitException`) seconds to wait before retrying
+- `rate_limit_limit` — (only on `RateLimitException`) the rate limit ceiling from `X-RateLimit-Limit` (nullable)
+- `rate_limit_remaining` — (only on `RateLimitException`) remaining requests from `X-RateLimit-Remaining` (nullable)
+
+## Rate Limiting
+
+The API returns rate limit headers on every response. The SDK captures these automatically.
+
+```python
+# After any API call, check the current rate limit status
+balance = client.get_balance()
+info = client.get_rate_limit_info()
+
+if info is not None:
+    print(f"Limit: {info.limit}, Remaining: {info.remaining}")
+```
+
+`get_rate_limit_info()` returns `RateLimitInfo | None`:
+- `None` before any request has been made, or if the response lacked rate limit headers
+- `RateLimitInfo(limit=int, remaining=int)` after a successful or failed request
+
+When a request hits the rate limit (HTTP 429), a `RateLimitException` is thrown with the rate limit details embedded:
+
+```python
+try:
+    number = client.get_number("wa", 73)
+except RateLimitException as e:
+    print(f"Retry after {e.retry_after}s")
+    print(f"Limit: {e.rate_limit_limit}, Remaining: {e.rate_limit_remaining}")
+```
+
+Note: An HTTP 429 with body `BANNED` means you are rate-limited (temporary). An HTTP 403 with body `BANNED` means your account or IP is actually banned (permanent). The SDK distinguishes these automatically.
 
 ## Tracking Headers
 
@@ -277,7 +315,7 @@ The SDK sends anonymous tracking headers with every request for analytics and de
 
 | Header | Value | Privacy |
 |--------|-------|---------|
-| `X-SDK-Version` | `1.0.0` | SDK version string |
+| `X-SDK-Version` | `1.1.0` | SDK version string |
 | `X-SDK-Language` | `python` | SDK language |
 | `X-SDK-Machine-Id` | SHA-256 hash of `platform.platform()` + `sys.implementation.name` (truncated to 32 chars) | Irreversible hash — no hostname or IP exposed |
 | `X-SDK-Timestamp` | ISO 8601 UTC timestamp | Request time |

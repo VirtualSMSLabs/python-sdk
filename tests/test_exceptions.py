@@ -23,6 +23,20 @@ class TestExceptionMapping:
         exc = VirtualSMSException.from_error_code("BANNED", 403)
         assert isinstance(exc, AuthenticationException)
 
+    def test_banned_on_429_throws_rate_limit_exception(self):
+        exc = VirtualSMSException.from_error_code("BANNED", 429)
+        assert isinstance(exc, RateLimitException)
+
+    def test_banned_on_429_has_rate_limit_fields(self):
+        exc = VirtualSMSException.from_error_code(
+            "BANNED", 429, retry_after=60,
+            rate_limit_limit=100, rate_limit_remaining=0,
+        )
+        assert isinstance(exc, RateLimitException)
+        assert exc.rate_limit_limit == 100
+        assert exc.rate_limit_remaining == 0
+        assert exc.retry_after == 60
+
     def test_no_balance_throws_insufficient_balance_exception(self):
         exc = VirtualSMSException.from_error_code("NO_BALANCE", 402)
         assert isinstance(exc, InsufficientBalanceException)

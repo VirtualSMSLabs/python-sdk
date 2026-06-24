@@ -10,12 +10,12 @@ from urllib.parse import urlencode
 from virtualsms.constants import PoolProvider
 from virtualsms.exceptions import VirtualSMSException
 from virtualsms.parser import TextResponseParser
-from virtualsms.response import BalanceResponse, NumberResponse, StatusResponse
+from virtualsms.response import BalanceResponse, NumberResponse, RateLimitInfo, StatusResponse
 from virtualsms.transport import Response, Transport, UrllibTransport
 
 
 class VirtualSMSClient:
-    VERSION = "1.0.0"
+    VERSION = "1.1.0"
     SDK_LANGUAGE = "python"
 
     def __init__(
@@ -31,6 +31,10 @@ class VirtualSMSClient:
         self._machine_id = hashlib.sha256(
             (platform.platform() + sys.implementation.name).encode("utf-8")
         ).hexdigest()[:32]
+        self._rate_limit_info: Optional[RateLimitInfo] = None
+
+    def get_rate_limit_info(self) -> Optional[RateLimitInfo]:
+        return self._rate_limit_info
 
     def get_balance(self) -> BalanceResponse:
         response = self._call_api("getBalance")
@@ -274,7 +278,31 @@ class VirtualSMSClient:
 
         url = self._base_url + "/stubs/handler_api?" + urlencode(query_params)
         headers = self._build_headers()
-        return self._transport.send(url, headers)
+        response = self._transport.send(url, headers)
+        self._rate_limit_info = self._extract_rate_limit_info(response.headers)
+        return response
+
+    def _extract_rate_limit_info(self, headers: Dict[str, str]) -> Optional[RateLimitInfo]:
+        limit = self._parse_int_header(headers, "X-RateLimit-Limit")
+        remaining = self._parse_int_header(headers, "X-RateLimit-Remaining")
+
+        if limit is None and remaining is None:
+            return None
+
+        return RateLimitInfo(
+            limit=limit if limit is not None else 0,
+            remaining=remaining if remaining is not None else 0,
+        )
+
+    @staticmethod
+    def _parse_int_header(headers: Dict[str, str], name: str) -> Optional[int]:
+        value = headers.get(name)
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return None
 
     def _build_headers(self) -> Dict[str, str]:
         return {
@@ -288,9 +316,16 @@ class VirtualSMSClient:
         if not parsed.is_success:
             retry_after = None
             if response.headers.get("Retry-After"):
-                retry_after = int(response.headers["Retry-After"])
+                try:
+                    retry_after = int(response.headers["Retry-After"])
+                except (ValueError, TypeError):
+                    retry_after = None
+            rate_limit_limit = self._parse_int_header(response.headers, "X-RateLimit-Limit")
+            rate_limit_remaining = self._parse_int_header(response.headers, "X-RateLimit-Remaining")
             raise VirtualSMSException.from_error_code(
                 error_code=parsed.error_code or "UNKNOWN",
                 http_status=response.status_code,
                 retry_after=retry_after,
+                rate_limit_limit=rate_limit_limit,
+                rate_limit_remaining=rate_limit_remaining,
             )
